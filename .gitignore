@@ -58,3 +58,13 @@ data/NHTS/vehpub.csv
 model/outputs/
 model/inputs/
 
+#model output
+*.db
+
+base_veh.csv
+alt_veh.csv
+vehs_chagned_hh.csv
+vehs_dif.csv
+T1 Analysis.qmd
+T1-Analysis.rmarkdown
+inputs/
