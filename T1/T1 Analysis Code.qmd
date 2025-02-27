@@ -4,7 +4,7 @@ format: html
 editor: visual
 ---
 
-You can add options to executable code like this
+### Load Libraries
 
 ```{r}
 library(tidyverse)
@@ -20,6 +20,8 @@ library (RSQLite)
 
 sf::sf_use_s2(FALSE)
 ```
+
+### Load and Map TAZs
 
 ```{r}
 TAZs <- here("inputs",
@@ -41,40 +43,7 @@ ggplot(TAZs) +
   theme_void()
 ```
 
-```{r}
-somermed_TAZs <- TAZs |>
-  filter(town %in% c("SOMERVILLE", "MEDFORD"))
-
-
-leaflet(somermed_TAZs) |>
-  addProviderTiles(provider = "CartoDB.Positron") |>
-  addPolygons(weight = 2,
-              color = "orange",
-              fillColor = "orange",
-              fillOpacity = 0.1,
-              highlightOptions = highlightOptions(weight = 3,
-                                                  fillOpacity = 0.5),
-              label = somermed_TAZs$taz_id)
-```
-
-```{r}
-somermed_blocks <- blocks(state = "MA", 
-                          county = "Middlesex", 
-                          year = 2010,
-                          progress_bar = FALSE) |>
-  st_transform("WGS84") |>
-  st_filter(somermed_TAZs)
-
-leaflet(somermed_blocks) |>
-  addProviderTiles(provider = "CartoDB.Positron") |>
-  addPolygons(weight = 2,
-              color = "forestgreen",
-              fillColor = "forestgreen",
-              fillOpacity = 0.1,
-              highlightOptions = highlightOptions(weight = 3,
-                                                  fillOpacity = 0.5),
-              label = somermed_blocks$GEOID10)
-```
+### Retrieve Base Scenario Vehicle Data
 
 ```{r}
 base_db <- dbConnect(drv=RSQLite::SQLite(), 
@@ -83,12 +52,16 @@ base_db <- dbConnect(drv=RSQLite::SQLite(),
 base_veh <- dbGetQuery(base_db, 'SELECT * FROM veh')
 ```
 
+### Retrieve Alternative Scenario Vehicle Data
+
 ```{r}
 alt_db <- dbConnect(drv=RSQLite::SQLite(), 
                      dbname=here("tdm23-alt.db"))
 
 alt_veh <- dbGetQuery(alt_db, 'SELECT * FROM veh')
 ```
+
+### Compare Vehicle Data Between Scenarios
 
 ```{r}
 base_veh <- base_veh |>
@@ -102,6 +75,8 @@ alt_veh <- alt_veh|>
 vehs_dif <- full_join(base_veh, alt_veh) |>
   mutate(veh_suff_base = ifelse(is.na(veh_suff_base), "new", veh_suff_base))
 ```
+
+### Categorize and Summarize Household Vehicle Changes by Census Block
 
 ```{r}
 vehs_changed_hh <- vehs_dif |>
@@ -139,6 +114,191 @@ vehs_changed_blocks <-vehs_changed_hh |>
            n_new_iv +
            n_new_zv > 0) |>
   rename(GEOID10 = block_id)
+```
 
-kable(vehs_changed_blocks)
+### Load Census Block Data for MA
+
+```{r}
+all_blocks <- blocks(state = "MA", year = 2010, progress_bar = FALSE) %>%
+  st_transform("WGS84")
+```
+
+### Merge Census Blocks with Vehicle Change Data and Categorize Changes
+
+```{r}
+blocks_merged <- all_blocks %>%
+  left_join(vehs_changed_blocks, by = "GEOID10") %>%
+  mutate(net_change = n_gained_veh - n_lost_veh,
+         change_type = case_when(
+           net_change > 0 ~ "Increase",
+           net_change < 0 ~ "Decrease",
+           TRUE         ~ "No Change"
+         ))
+
+blocks_filtered <- blocks_merged %>% 
+  filter(net_change != 0)
+```
+
+### Map TAZ Vehicle Availability Changes by Block
+
+```{r}
+pal <- colorFactor(
+  palette = c("Decrease" = "red", "Increase" = "green"),
+  domain = blocks_filtered$change_type
+)
+
+leaflet(blocks_filtered) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(weight = 1,
+              color = "black",
+              fillColor = ~pal(change_type),
+              fillOpacity = 0.7,
+              highlightOptions = highlightOptions(weight = 3, fillOpacity = 0.5),
+              label = ~paste0("<strong>GEOID:</strong> ", GEOID10, "<br>",
+                              "<strong>Households:</strong> ", n_hhs, "<br>",
+                              "<strong>Gained:</strong> ", n_gained_veh, "<br>",
+                              "<strong>Lost:</strong> ", n_lost_veh, "<br>",
+                              "<strong>Net Change:</strong> ", net_change)) %>%
+  addLegend("bottomright",
+            pal = pal,
+            values = ~change_type,
+            title = "Vehicle Change",
+            opacity = 1)
+```
+
+### Load MBTA Routes
+
+```{r}
+mbta_arc <- st_read("inputs/mbta_rapid_transit/mbta_rapid_transit/MBTA_ARC.shp", quiet = TRUE) %>% 
+  st_transform("WGS84")
+```
+
+### Filter MBTA Routes
+
+```{r}
+mbta_arc_orange <- mbta_arc %>% filter(LINE == "ORANGE")
+mbta_arc_green  <- mbta_arc %>% filter(LINE == "GREEN")
+mbta_arc_red    <- mbta_arc %>% filter(LINE == "RED")
+```
+
+### Map TAZ Vehicle Availability Changes with Green Line Overlay
+
+```{r}
+m1 <- leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  
+  addPolygons(data = blocks_filtered,
+              weight = 1,
+              color = "black",
+              fillColor = ~pal(change_type),
+              fillOpacity = 0.7,
+              highlightOptions = highlightOptions(weight = 3, fillOpacity = 0.5),
+              label = ~paste0("<strong>GEOID:</strong> ", GEOID10, "<br>",
+                              "<strong>Households:</strong> ", n_hhs, "<br>",
+                              "<strong>Gained:</strong> ", n_gained_veh, "<br>",
+                              "<strong>Lost:</strong> ", n_lost_veh, "<br>",
+                              "<strong>Net Change:</strong> ", net_change),
+              group = "Blocks") %>%
+  
+  addPolylines(data = mbta_arc_green,
+               color = "green",  
+               weight = 2,
+               opacity = 1,
+               group = "MBTA Green Arcs") %>%
+  
+
+  addLegend("bottomright",
+            pal = pal,
+            values = blocks_filtered$change_type,
+            title = "Vehicle Change",
+            opacity = 1)
+
+
+m1
+```
+
+### Map TAZ Vehicle Availability Changes with Green, Red, and Orange Line Overlay
+
+```{r}
+m2 <- leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  
+  addPolygons(data = blocks_filtered,
+              weight = 1,
+              color = "black",
+              fillColor = ~pal(change_type),
+              fillOpacity = 0.7,
+              highlightOptions = highlightOptions(weight = 3, fillOpacity = 0.5),
+              label = ~paste0("<strong>GEOID:</strong> ", GEOID10, "<br>",
+                              "<strong>Households:</strong> ", n_hhs, "<br>",
+                              "<strong>Gained:</strong> ", n_gained_veh, "<br>",
+                              "<strong>Lost:</strong> ", n_lost_veh, "<br>",
+                              "<strong>Net Change:</strong> ", net_change),
+              group = "Blocks") %>%
+
+  addPolylines(data = mbta_arc_orange,
+               color = "orange",
+               weight = 2,
+               opacity = 1,
+               group = "ORANGE Lines") %>%
+
+  addPolylines(data = mbta_arc_green,
+               color = "green",
+               weight = 2,
+               opacity = 1,
+               group = "GREEN Lines") %>%
+
+  addPolylines(data = mbta_arc_red,
+               color = "red",
+               weight = 2,
+               opacity = 1,
+               group = "RED Lines") %>%
+  
+  addLegend("bottomright",
+            pal = pal,
+            values = blocks_filtered$change_type,
+            title = "Vehicle Change",
+            opacity = 1)
+
+m2
+```
+
+### Map TAZ Vehicle Availability Changes with Red and Orange Line Overlay
+
+```{r}
+m3 <- leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  
+  addPolygons(data = blocks_filtered,
+              weight = 1,
+              color = "black",
+              fillColor = ~pal(change_type),
+              fillOpacity = 0.7,
+              highlightOptions = highlightOptions(weight = 3, fillOpacity = 0.5),
+              label = ~paste0("<strong>GEOID:</strong> ", GEOID10, "<br>",
+                              "<strong>Households:</strong> ", n_hhs, "<br>",
+                              "<strong>Gained:</strong> ", n_gained_veh, "<br>",
+                              "<strong>Lost:</strong> ", n_lost_veh, "<br>",
+                              "<strong>Net Change:</strong> ", net_change),
+              group = "Blocks") %>%
+
+  addPolylines(data = mbta_arc_orange,
+               color = "orange",
+               weight = 2,
+               opacity = 1,
+               group = "ORANGE Lines") %>%
+
+  addPolylines(data = mbta_arc_red,
+               color = "red",
+               weight = 2,
+               opacity = 1,
+               group = "RED Lines") %>%
+      
+  addLegend("bottomright",
+            pal = pal,
+            values = blocks_filtered$change_type,
+            title = "Vehicle Change",
+            opacity = 1) 
+
+m3
 ```
